@@ -41,3 +41,12 @@ class Verdict(str, Enum):
     FRESH = "fresh"
     REPLAYED = "replayed"
     ROLLED_OVER = "rolled_over"
+
+
+class RetryState(str, Enum):
+    """Lifecycle of one bag's resubmission ledger entry."""
+
+    SCHEDULED = "scheduled"
+    IN_TRANSIT = "in_transit"
+    MANUAL = "manual"
+    CLEARED = "cleared"

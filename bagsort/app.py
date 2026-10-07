@@ -21,13 +21,15 @@ from bagsort.flight.mapping import BagMapping
 from bagsort.flight.schedule import ScheduleBoard
 from bagsort.ids import IdFactory
 from bagsort.inject.injector import Injector
-from bagsort.model.entities import Bag, Flight, Reading, SortRecord
+from bagsort.model.entities import Bag, Flight, Reading, RetryAccount, SortRecord
 from bagsort.model.errors import unknown_bag
 from bagsort.ns.chutes import ChuteRegistry
 from bagsort.ns.namespace import Namespace
 from bagsort.ns.topology import handling_line
 from bagsort.quota.quota import QuotaBook
 from bagsort.recheck.queue import RecheckQueue
+from bagsort.recheck.reconcile import RetryReconciler
+from bagsort.recheck.retry import RetryController
 from bagsort.reporting.report import PlantReport
 from bagsort.sequence.verdict import VerdictTracker
 from bagsort.sorter.sorter import Sorter
@@ -65,6 +67,8 @@ class Plant:
     injector: Injector
     desk: Desk
     recheck: RecheckQueue
+    retry: RetryController
+    reconciler: RetryReconciler
     belt: Belt
     quota: QuotaBook
     audit: AuditChain
@@ -104,6 +108,8 @@ class Plant:
         desk = Desk(store, reader, book, mapping, injector, quota, clock, handling_line())
         closer = FlightCloser(book)
         recheck = RecheckQueue(store, book, clock)
+        retry = RetryController(store, recheck, book, mapping, clock)
+        reconciler = RetryReconciler(store)
         belt = Belt(store, clock, IdFactory("cmd"))
 
         audit = AuditChain(store, clock, handling_line())
@@ -113,6 +119,10 @@ class Plant:
             "bag.sorted",
             "bag.diverted",
             "bag.recheck_enqueued",
+            "bag.retry_scheduled",
+            "bag.retry_executed",
+            "bag.retry_escalated",
+            "bag.retry_cleared",
             "flight.closed",
             "chute.assigned",
             "belt.switched",
@@ -143,6 +153,8 @@ class Plant:
             injector=injector,
             desk=desk,
             recheck=recheck,
+            retry=retry,
+            reconciler=reconciler,
             belt=belt,
             quota=quota,
             audit=audit,
@@ -229,6 +241,67 @@ class Plant:
     def process_recheck(self) -> Bag | None:
         return self.recheck.dequeue()
 
+    def fail_recheck(self, bag_id: str) -> RetryAccount:
+        """Verdict hook: the bag failed recheck; let the controller decide."""
+
+        result = self.retry.schedule(bag_id)
+        if result.outcome == "scheduled":
+            self.bus.publish(
+                "bag.retry_scheduled",
+                bag_id=bag_id,
+                attempt=result.account.attempts + 1,
+                slot=result.account.slot,
+            )
+        elif result.outcome == "escalated":
+            self.bus.publish(
+                "bag.retry_escalated",
+                bag_id=bag_id,
+                reason=result.account.reason,
+                stuck_stage=result.account.stuck_stage,
+            )
+        return result.account
+
+    def pass_recheck(self, bag_id: str) -> RetryAccount:
+        """Verdict hook: the bag passed; close its retry ledger entry."""
+
+        result = self.retry.clear(bag_id)
+        if result.outcome == "cleared":
+            self.bus.publish("bag.retry_cleared", bag_id=bag_id)
+        return result.account
+
+    def run_due_retries(self) -> list[RetryAccount]:
+        """Fire every resubmission whose slot has arrived."""
+
+        results = self.retry.execute_due()
+        for result in results:
+            self._publish_retry_outcome(result.outcome, result.account)
+        return [result.account for result in results]
+
+    def execute_retry(self, bag_id: str) -> RetryAccount:
+        """Fire one bag's resubmission when its slot has arrived."""
+
+        result = self.retry.execute(bag_id)
+        self._publish_retry_outcome(result.outcome, result.account)
+        return result.account
+
+    def reconcile_retries(self) -> dict[str, object]:
+        """Cross-check the recheck queue, retry ledger, sort and quota books."""
+
+        return self.reconciler.report()
+
+    def _publish_retry_outcome(self, outcome: str, account: RetryAccount) -> None:
+        if outcome == "executed":
+            self.bus.publish(
+                "bag.retry_executed", bag_id=account.bag_id, attempt=account.attempts
+            )
+        elif outcome == "escalated":
+            self.bus.publish(
+                "bag.retry_escalated",
+                bag_id=account.bag_id,
+                reason=account.reason,
+                stuck_stage=account.stuck_stage,
+            )
+
     def switch_belt(self, carousel: str, batch: int) -> int:
         cleared = self.belt.switch(carousel, batch)
         self.bus.publish("belt.switched", carousel=carousel, batch=batch)
@@ -255,6 +328,10 @@ class _AuditSubscriber:
         "bag.sorted": ("sort", "sorter"),
         "bag.diverted": ("diversion", "sorter"),
         "bag.recheck_enqueued": ("recheck", "recheck"),
+        "bag.retry_scheduled": ("retry_schedule", "recheck"),
+        "bag.retry_executed": ("retry_execute", "recheck"),
+        "bag.retry_escalated": ("retry_escalate", "recheck"),
+        "bag.retry_cleared": ("retry_clear", "recheck"),
         "flight.closed": ("flight_close", "audit"),
         "chute.assigned": ("chute_assign", "chute"),
         "belt.switched": ("belt_switch", "belt"),

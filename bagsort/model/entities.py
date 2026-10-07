@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from .enums import BagState, FlightState
+from .enums import BagState, FlightState, RetryState
 
 
 def _clean(raw: Any) -> Any:
@@ -249,6 +249,103 @@ class Sequence:
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "Sequence":
         return cls(epoch=int(raw.get("epoch", 0)), next_value=int(raw.get("next", 0)))
+
+
+@dataclass(frozen=True)
+class RetryPolicy:
+    """The standing rules every resubmission decision is made under.
+
+    ``rationale`` and ``rejected`` are part of the committed record: they state
+    why the slot strategy was chosen and which alternative was turned down, so
+    the trade-off survives next to the decisions it produced.
+    """
+
+    strategy: str = "cutoff_anchored"
+    max_attempts: int = 3
+    interval_seconds: int = 300
+    min_cycle_seconds: int = 120
+    service_time_seconds: int = 30
+    max_backlog: int = 50
+    rationale: str = ""
+    rejected: str = ""
+    registered_at: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "strategy": self.strategy,
+            "max_attempts": self.max_attempts,
+            "interval_seconds": self.interval_seconds,
+            "min_cycle_seconds": self.min_cycle_seconds,
+            "service_time_seconds": self.service_time_seconds,
+            "max_backlog": self.max_backlog,
+            "rationale": self.rationale,
+            "rejected": self.rejected,
+            "registered_at": self.registered_at,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "RetryPolicy":
+        return cls(
+            strategy=str(raw.get("strategy", "cutoff_anchored")),
+            max_attempts=int(raw.get("max_attempts", 3)),
+            interval_seconds=int(raw.get("interval_seconds", 300)),
+            min_cycle_seconds=int(raw.get("min_cycle_seconds", 120)),
+            service_time_seconds=int(raw.get("service_time_seconds", 30)),
+            max_backlog=int(raw.get("max_backlog", 50)),
+            rationale=str(raw.get("rationale", "")),
+            rejected=str(raw.get("rejected", "")),
+            registered_at=str(raw.get("registered_at", "")),
+        )
+
+    def evolved(self, **changes: Any) -> "RetryPolicy":
+        return replace(self, **changes)
+
+
+@dataclass(frozen=True)
+class RetryAccount:
+    """The resubmission ledger for one bag.
+
+    ``attempts`` counts executed resubmissions; it is never erased, only the
+    lifecycle ``state`` moves. Clearing a bag that passed recheck keeps the
+    attempt history so the ledger can still be cross-checked afterwards.
+    """
+
+    bag_id: str
+    attempts: int = 0
+    state: RetryState = RetryState.SCHEDULED
+    slot: str = ""
+    cutoff_at: str = ""
+    reason: str = ""
+    stuck_stage: str = ""
+    updated_at: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "bag_id": self.bag_id,
+            "attempts": self.attempts,
+            "state": self.state.value,
+            "slot": self.slot,
+            "cutoff_at": self.cutoff_at,
+            "reason": self.reason,
+            "stuck_stage": self.stuck_stage,
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "RetryAccount":
+        return cls(
+            bag_id=str(raw["bag_id"]),
+            attempts=int(raw.get("attempts", 0)),
+            state=RetryState(raw.get("state", RetryState.SCHEDULED.value)),
+            slot=str(raw.get("slot", "")),
+            cutoff_at=str(raw.get("cutoff_at", "")),
+            reason=str(raw.get("reason", "")),
+            stuck_stage=str(raw.get("stuck_stage", "")),
+            updated_at=str(raw.get("updated_at", "")),
+        )
+
+    def evolved(self, **changes: Any) -> "RetryAccount":
+        return replace(self, **changes)
 
 
 @dataclass(frozen=True)

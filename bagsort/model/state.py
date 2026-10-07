@@ -16,10 +16,13 @@ from .entities import (
     ChuteAssignment,
     Flight,
     LoadRecord,
+    RetryAccount,
+    RetryPolicy,
     Sequence,
     SortRecord,
     TransferCommand,
 )
+from .enums import RetryState
 from bagsort.errors import ValidationError
 
 
@@ -39,6 +42,8 @@ class State:
     counters: dict[str, int] = field(default_factory=dict)
     sequence: Sequence = field(default_factory=Sequence)
     recheck_queue: list[str] = field(default_factory=list)
+    retry_accounts: dict[str, RetryAccount] = field(default_factory=dict)
+    retry_policy: RetryPolicy | None = None
     belt_carousel: str = ""
     belt_batch: int = 0
     belt_on_carousel: list[str] = field(default_factory=list)
@@ -57,6 +62,8 @@ class State:
             counters=dict(self.counters),
             sequence=self.sequence,
             recheck_queue=list(self.recheck_queue),
+            retry_accounts=dict(self.retry_accounts),
+            retry_policy=self.retry_policy,
             belt_carousel=self.belt_carousel,
             belt_batch=self.belt_batch,
             belt_on_carousel=list(self.belt_on_carousel),
@@ -78,6 +85,10 @@ class State:
             "counters": dict(sorted(self.counters.items())),
             "sequence": self.sequence.as_dict(),
             "recheck_queue": list(self.recheck_queue),
+            "retry_accounts": {
+                key: value.as_dict() for key, value in sorted(self.retry_accounts.items())
+            },
+            "retry_policy": self.retry_policy.as_dict() if self.retry_policy else None,
             "belt": {
                 "carousel": self.belt_carousel,
                 "batch": self.belt_batch,
@@ -142,6 +153,39 @@ def apply_entry(state: State, kind: str, payload: dict[str, Any]) -> None:
         state.recheck_queue = [item for item in state.recheck_queue if item != bag_id]
     elif kind == "recheck.clear":
         state.recheck_queue = []
+    elif kind == "retry.policy":
+        state.retry_policy = RetryPolicy.from_dict(payload["policy"])
+    elif kind == "retry.schedule":
+        account = RetryAccount.from_dict(payload["account"])
+        existing = state.retry_accounts.get(account.bag_id)
+        # A manual verdict is absorbing, and an older attempt never overwrites
+        # a newer one; a repeated schedule for the same attempt is a no-op.
+        if existing is None or (
+            existing.state is not RetryState.MANUAL
+            and account.attempts >= existing.attempts
+        ):
+            state.retry_accounts[account.bag_id] = account
+    elif kind == "retry.execute":
+        account = RetryAccount.from_dict(payload["account"])
+        existing = state.retry_accounts.get(account.bag_id)
+        # Fires only from the scheduled state with the attempt advanced by one,
+        # so a duplicated execute command cannot count the same attempt twice.
+        if (
+            existing is not None
+            and existing.state is RetryState.SCHEDULED
+            and account.attempts == existing.attempts + 1
+        ):
+            state.retry_accounts[account.bag_id] = account
+    elif kind == "retry.escalate":
+        account = RetryAccount.from_dict(payload["account"])
+        existing = state.retry_accounts.get(account.bag_id)
+        if existing is None or existing.state is not RetryState.MANUAL:
+            state.retry_accounts[account.bag_id] = account
+    elif kind == "retry.clear":
+        account = RetryAccount.from_dict(payload["account"])
+        existing = state.retry_accounts.get(account.bag_id)
+        if existing is not None and existing.state is not RetryState.CLEARED:
+            state.retry_accounts[account.bag_id] = account
     elif kind == "belt.set":
         state.belt_carousel = str(payload.get("carousel", ""))
         state.belt_batch = int(payload.get("batch", 0))

@@ -555,6 +555,45 @@ def handle_recheck_clear(server, request: Request) -> Response:
     return json_response({"dropped": dropped})
 
 
+def handle_retry_schedule(server, request: Request) -> Response:
+    account = _plant(server).fail_recheck(request.required("bag_id"))
+    return json_response(account.as_dict(), status=201)
+
+
+def handle_retry_run(server, request: Request) -> Response:
+    accounts = _plant(server).run_due_retries()
+    return json_response([account.as_dict() for account in accounts])
+
+
+def handle_retry_execute(server, request: Request) -> Response:
+    account = _plant(server).execute_retry(request.required("bag_id"))
+    return json_response(account.as_dict())
+
+
+def handle_retry_clear(server, request: Request) -> Response:
+    account = _plant(server).pass_recheck(request.required("bag_id"))
+    return json_response(account.as_dict())
+
+
+def handle_retry_accounts(server, request: Request) -> Response:
+    return json_response([account.as_dict() for account in _plant(server).retry.accounts()])
+
+
+def handle_retry_account(server, request: Request) -> Response:
+    account = _plant(server).retry.account(request.param("bag"))
+    if account is None:
+        return json_response({"error": "not found"}, status=404)
+    return json_response(account.as_dict())
+
+
+def handle_retry_policy(server, request: Request) -> Response:
+    return json_response(_plant(server).retry.policy().as_dict())
+
+
+def handle_recheck_reconcile(server, request: Request) -> Response:
+    return json_response(_plant(server).reconcile_retries())
+
+
 # ---------------------------------------------------------------------------
 # belt
 # ---------------------------------------------------------------------------
