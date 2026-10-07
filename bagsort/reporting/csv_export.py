@@ -40,9 +40,25 @@ def sort_rows(records: Iterable[object]) -> list[dict[str, object]]:
             "chute_id": record.chute_id,
             "sequence": record.sequence,
             "epoch": record.epoch,
+            "attempt": getattr(record, "attempt", 0),
             "at": record.at,
         }
         for record in records
+    ]
+
+
+def handoff_rows(handoffs: Iterable[object]) -> list[dict[str, object]]:
+    return [
+        {
+            "bag_id": handoff.bag_id,
+            "flight_id": handoff.flight_id,
+            "reason": handoff.reason,
+            "blocked_stage": handoff.blocked_stage,
+            "attempts_used": handoff.attempts_used,
+            "max_attempts": handoff.max_attempts,
+            "at": handoff.at,
+        }
+        for handoff in handoffs
     ]
 
 
@@ -59,5 +75,14 @@ def load_rows(records: Iterable[object]) -> list[dict[str, object]]:
 
 
 AUDIT_COLUMNS = ("sequence", "kind", "subject", "stage", "at", "digest")
-SORT_COLUMNS = ("bag_id", "flight_id", "chute_id", "sequence", "epoch", "at")
+SORT_COLUMNS = ("bag_id", "flight_id", "chute_id", "sequence", "epoch", "attempt", "at")
+HANDOFF_COLUMNS = (
+    "bag_id",
+    "flight_id",
+    "reason",
+    "blocked_stage",
+    "attempts_used",
+    "max_attempts",
+    "at",
+)
 LOAD_COLUMNS = ("bag_id", "carousel", "batch", "at")

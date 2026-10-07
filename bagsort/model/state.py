@@ -16,11 +16,15 @@ from .entities import (
     ChuteAssignment,
     Flight,
     LoadRecord,
+    ManualHandoff,
+    ReinjectPlan,
     Sequence,
     SortRecord,
     TransferCommand,
 )
 from bagsort.errors import ValidationError
+
+DEFAULT_RECHECK_CAPACITY = 8
 
 
 @dataclass
@@ -39,6 +43,10 @@ class State:
     counters: dict[str, int] = field(default_factory=dict)
     sequence: Sequence = field(default_factory=Sequence)
     recheck_queue: list[str] = field(default_factory=list)
+    recheck_capacity: int = DEFAULT_RECHECK_CAPACITY
+    reinject_plans: dict[str, ReinjectPlan] = field(default_factory=dict)
+    manual_handoffs: list[ManualHandoff] = field(default_factory=list)
+    reinject_limits: dict[str, int] = field(default_factory=dict)
     belt_carousel: str = ""
     belt_batch: int = 0
     belt_on_carousel: list[str] = field(default_factory=list)
@@ -57,6 +65,10 @@ class State:
             counters=dict(self.counters),
             sequence=self.sequence,
             recheck_queue=list(self.recheck_queue),
+            recheck_capacity=self.recheck_capacity,
+            reinject_plans={key: value for key, value in self.reinject_plans.items()},
+            manual_handoffs=list(self.manual_handoffs),
+            reinject_limits=dict(self.reinject_limits),
             belt_carousel=self.belt_carousel,
             belt_batch=self.belt_batch,
             belt_on_carousel=list(self.belt_on_carousel),
@@ -78,6 +90,12 @@ class State:
             "counters": dict(sorted(self.counters.items())),
             "sequence": self.sequence.as_dict(),
             "recheck_queue": list(self.recheck_queue),
+            "recheck_capacity": self.recheck_capacity,
+            "reinject_plans": {
+                key: plan.as_dict() for key, plan in sorted(self.reinject_plans.items())
+            },
+            "manual_handoffs": [handoff.as_dict() for handoff in self.manual_handoffs],
+            "reinject_limits": dict(sorted(self.reinject_limits.items())),
             "belt": {
                 "carousel": self.belt_carousel,
                 "batch": self.belt_batch,
@@ -142,6 +160,19 @@ def apply_entry(state: State, kind: str, payload: dict[str, Any]) -> None:
         state.recheck_queue = [item for item in state.recheck_queue if item != bag_id]
     elif kind == "recheck.clear":
         state.recheck_queue = []
+    elif kind == "recheck.capacity":
+        state.recheck_capacity = int(payload.get("capacity", 0))
+    elif kind == "reinject.plan.put":
+        plan = ReinjectPlan.from_dict(payload["plan"])
+        state.reinject_plans[plan.bag_id] = plan
+    elif kind == "reinject.limit.set":
+        state.reinject_limits[str(payload["flight_id"])] = int(payload["limit"])
+    elif kind == "reinject.limit.adjust":
+        flight_id = str(payload["flight_id"])
+        base = state.reinject_limits.get(flight_id, 0)
+        state.reinject_limits[flight_id] = base + int(payload["delta"])
+    elif kind == "manual.handoff":
+        state.manual_handoffs.append(ManualHandoff.from_dict(payload["handoff"]))
     elif kind == "belt.set":
         state.belt_carousel = str(payload.get("carousel", ""))
         state.belt_batch = int(payload.get("batch", 0))

@@ -77,6 +77,22 @@ class Injector:
         self._sorter.dispatch(bag, reading)
         return True
 
+    def reinject(self, bag: Bag, attempt: int) -> SortRecord:
+        """Re-drive a recheck-failed bag under its numbered reinjection attempt.
+
+        Idempotent per ``(bag, attempt)``; the sorter rejects a repeated attempt
+        number instead of appending a second sort record.
+        """
+
+        reading = Reading(
+            barcode=bag.barcode,
+            bag_id=bag.id,
+            sequence=bag.sequence,
+            epoch=bag.epoch,
+            committed=True,
+        )
+        return self._sorter.dispatch_attempt(bag, reading, attempt)
+
     def drain_in_transit(self, flight_id: str) -> int:
         """Settle everyone still on the belt when a flight is cut off."""
 

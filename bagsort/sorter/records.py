@@ -21,6 +21,23 @@ class SortLog:
     def count_for(self, bag_id: str) -> int:
         return sum(1 for record in self._store.state().sort_records if record.bag_id == bag_id)
 
+    def has_attempt(self, bag_id: str, attempt: int) -> bool:
+        """Whether a sort record already exists for this exact reinjection attempt."""
+
+        return any(
+            record.bag_id == bag_id and record.attempt == attempt
+            for record in self._store.state().sort_records
+        )
+
+    def reinjection_count(self, bag_id: str) -> int:
+        """How often a bag was re-driven (sort records with ``attempt >= 1``)."""
+
+        return sum(
+            1
+            for record in self._store.state().sort_records
+            if record.bag_id == bag_id and record.attempt >= 1
+        )
+
     def last_chute(self, bag_id: str) -> str:
         last = ""
         for record in self._store.state().sort_records:

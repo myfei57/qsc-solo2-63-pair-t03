@@ -8,6 +8,7 @@ instead of silently reordering it.
 from __future__ import annotations
 
 from bagsort.clock import Clock
+from bagsort.errors import QuotaError
 from bagsort.model.entities import Bag
 from bagsort.model.enums import BagState
 from bagsort.model.errors import unknown_bag
@@ -26,8 +27,16 @@ class RecheckQueue:
         updated = bag.evolved(state=BagState.RECHECKED)
         at = self._clock.now_iso()
         with self._store.session() as session:
+            already = updated.id in session.state.recheck_queue
+            capacity = session.state.recheck_capacity
+            if not already and capacity and len(session.state.recheck_queue) >= capacity:
+                # Explicit backpressure: the caller must hand the bag off
+                # instead of the queue silently growing past station capacity.
+                raise QuotaError(
+                    f"recheck station backlog is at capacity {capacity}"
+                )
             session.state.bags[updated.id] = updated
-            if updated.id not in session.state.recheck_queue:
+            if not already:
                 session.state.recheck_queue.append(updated.id)
             session.record("bag.put", {"bag": updated.as_dict()}, at)
             session.record("recheck.enqueue", {"bag_id": updated.id}, at)

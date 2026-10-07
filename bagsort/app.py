@@ -28,6 +28,9 @@ from bagsort.ns.namespace import Namespace
 from bagsort.ns.topology import handling_line
 from bagsort.quota.quota import QuotaBook
 from bagsort.recheck.queue import RecheckQueue
+from bagsort.reinject import policy
+from bagsort.reinject.director import ReinjectDirector
+from bagsort.reinject.quota import ReinjectQuota
 from bagsort.reporting.report import PlantReport
 from bagsort.sequence.verdict import VerdictTracker
 from bagsort.sorter.sorter import Sorter
@@ -65,6 +68,8 @@ class Plant:
     injector: Injector
     desk: Desk
     recheck: RecheckQueue
+    reinject: ReinjectDirector
+    reinject_quota: ReinjectQuota
     belt: Belt
     quota: QuotaBook
     audit: AuditChain
@@ -101,9 +106,11 @@ class Plant:
         sorter = Sorter(store, mapping, chutes, clock, VerdictTracker())
         injector = Injector(store, book, sorter, clock)
         quota = QuotaBook(store, clock)
+        reinject_quota = ReinjectQuota(store, clock)
         desk = Desk(store, reader, book, mapping, injector, quota, clock, handling_line())
         closer = FlightCloser(book)
         recheck = RecheckQueue(store, book, clock)
+        reinject = ReinjectDirector(store, book, chutes, sorter, reinject_quota, clock)
         belt = Belt(store, clock, IdFactory("cmd"))
 
         audit = AuditChain(store, clock, handling_line())
@@ -113,6 +120,10 @@ class Plant:
             "bag.sorted",
             "bag.diverted",
             "bag.recheck_enqueued",
+            "bag.reinjection_planned",
+            "bag.reinjected",
+            "bag.reinjection_blocked",
+            "bag.manual_handoff",
             "flight.closed",
             "chute.assigned",
             "belt.switched",
@@ -121,7 +132,16 @@ class Plant:
             bus.subscribe(topic, audit_subscriber)
 
         report = PlantReport(
-            store, book, chutes, belt, quota, audit, namespace, handling_line()
+            store,
+            book,
+            chutes,
+            belt,
+            quota,
+            audit,
+            namespace,
+            handling_line(),
+            reinject=reinject,
+            reinject_quota=reinject_quota,
         )
         return cls(
             store=store,
@@ -143,6 +163,8 @@ class Plant:
             injector=injector,
             desk=desk,
             recheck=recheck,
+            reinject=reinject,
+            reinject_quota=reinject_quota,
             belt=belt,
             quota=quota,
             audit=audit,
@@ -229,6 +251,122 @@ class Plant:
     def process_recheck(self) -> Bag | None:
         return self.recheck.dequeue()
 
+    def set_recheck_capacity(self, capacity: int) -> int:
+        return self.reinject.set_recheck_capacity(capacity)
+
+    def fail_recheck(
+        self, bag_id: str, settings: policy.Policy | None = None
+    ):
+        """Station verdict after dequeue: a failed recheck becomes a plan.
+
+        Enters through the backpressure-limited admit path, so an
+        over-capacity station refuses before any plan is committed.
+        """
+
+        plan = self.reinject.admit(self.bag(bag_id), settings)
+        self._publish_planned(plan)
+        return plan
+
+    def _publish_planned(self, plan) -> None:
+        self.bus.publish(
+            "bag.reinjection_planned",
+            bag_id=plan.bag_id,
+            flight_id=plan.flight_id,
+            policy=plan.policy,
+            rejected_alternative=plan.rejected_alternative,
+            max_attempts=plan.max_attempts,
+            slots=list(plan.slots),
+            tradeoff=plan.tradeoff,
+        )
+
+    def trigger_reinjection(self, bag_id: str):
+        """Idempotently fire the next attempt; returns the trigger result."""
+
+        result = self.reinject.trigger(bag_id)
+        if result.outcome == "injected":
+            self.bus.publish(
+                "bag.reinjected",
+                bag_id=bag_id,
+                attempt=result.attempt_number,
+            )
+        elif result.outcome == "handoff":
+            handoff = self.reinject.handoff_for(bag_id)
+            reason = handoff.reason if handoff else result.outcome
+            stage = handoff.blocked_stage if handoff else "reinject"
+            self.bus.publish(
+                "bag.reinjection_blocked",
+                bag_id=bag_id,
+                blocked_stage=stage,
+                outcome=result.outcome,
+                reason=reason,
+            )
+            self.bus.publish(
+                "bag.manual_handoff",
+                bag_id=bag_id,
+                blocked_stage=stage,
+                reason=reason,
+            )
+        return result
+
+    def trigger_due_reinjections(self) -> list:
+        """The bounded station sweep: fire every due attempt at most once."""
+
+        results = self.reinject.trigger_due()
+        for result in results:
+            if result.outcome == "injected":
+                self.bus.publish(
+                    "bag.reinjected",
+                    bag_id=result.bag_id,
+                    attempt=result.attempt_number,
+                )
+            elif result.outcome == "handoff":
+                handoff = self.reinject.handoff_for(result.bag_id)
+                reason = handoff.reason if handoff else result.outcome
+                stage = handoff.blocked_stage if handoff else "reinject"
+                self.bus.publish(
+                    "bag.reinjection_blocked",
+                    bag_id=result.bag_id,
+                    blocked_stage=stage,
+                    outcome=result.outcome,
+                    reason=reason,
+                )
+                self.bus.publish(
+                    "bag.manual_handoff",
+                    bag_id=result.bag_id,
+                    blocked_stage=stage,
+                    reason=reason,
+                )
+        return results
+
+    def report_recheck_failure(self, bag_id: str, reason: str = "recheck failed again"):
+        """The reinjected bag failed recheck again: reschedule or hand off."""
+
+        plan = self.reinject.fail_current(bag_id, reason)
+        if plan.status == "handoff":
+            handoff = self.reinject.handoff_for(bag_id)
+            self.bus.publish(
+                "bag.manual_handoff",
+                bag_id=bag_id,
+                blocked_stage=handoff.blocked_stage if handoff else "recheck",
+                reason=handoff.reason if handoff else reason,
+            )
+        return plan
+
+    def handoff_bag(self, bag_id: str, reason: str, blocked_stage: str = "reinject"):
+        """Send a stuck bag to manual handling explicitly (never drop it)."""
+
+        handoff = self.reinject.handoff(bag_id, reason, blocked_stage)
+        self.bus.publish(
+            "bag.manual_handoff",
+            bag_id=bag_id,
+            blocked_stage=blocked_stage,
+            reason=reason,
+        )
+        return handoff
+
+    def reinjection_reconcile(self) -> dict[str, object]:
+        return self.reinject.reconcile()
+
     def switch_belt(self, carousel: str, batch: int) -> int:
         cleared = self.belt.switch(carousel, batch)
         self.bus.publish("belt.switched", carousel=carousel, batch=batch)
@@ -255,6 +393,10 @@ class _AuditSubscriber:
         "bag.sorted": ("sort", "sorter"),
         "bag.diverted": ("diversion", "sorter"),
         "bag.recheck_enqueued": ("recheck", "recheck"),
+        "bag.reinjection_planned": ("reinject_plan", "recheck"),
+        "bag.reinjected": ("reinjection", "reinject"),
+        "bag.reinjection_blocked": ("reinjection_block", "reinject"),
+        "bag.manual_handoff": ("manual_handoff", "reinject"),
         "flight.closed": ("flight_close", "audit"),
         "chute.assigned": ("chute_assign", "chute"),
         "belt.switched": ("belt_switch", "belt"),

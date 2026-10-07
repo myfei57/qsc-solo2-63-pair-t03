@@ -21,6 +21,8 @@ class BagState(str, Enum):
     INJECTED = "injected"
     SORTED = "sorted"
     RECHECKED = "rechecked"
+    REINJECTING = "reinjecting"
+    MANUAL_HANDLING = "manual_handling"
     LOADED = "loaded"
     DIVERTED = "diverted"
 
@@ -33,7 +35,21 @@ class BagState(str, Enum):
             BagState.INJECTED,
             BagState.SORTED,
             BagState.RECHECKED,
+            BagState.REINJECTING,
         )
+
+
+class ReinjectOutcome(str, Enum):
+    """What happened when one scheduled reinjection attempt was triggered."""
+
+    INJECTED = "injected"
+    DUPLICATE = "duplicate"
+    PENDING_SLOT = "pending_slot"
+    QUOTA_EXHAUSTED = "quota_exhausted"
+    PAST_DEADLINE = "past_deadline"
+    FLIGHT_CLOSED = "flight_closed"
+    NO_CHUTE = "no_chute"
+    HANDOFF = "handoff"
 
 class Verdict(str, Enum):
     """Result of comparing an observed (epoch, sequence) pair with the high-water mark."""

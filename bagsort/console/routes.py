@@ -117,6 +117,23 @@ def route_table() -> list[Route]:
         Route("GET", "/api/recheck/items", "list the recheck queue", "handle_recheck_items"),
         Route("GET", "/api/recheck/deadline/{flight}", "cutoff for a flight", "handle_recheck_deadline"),
         Route("POST", "/api/recheck/clear", "clear the recheck queue", "handle_recheck_clear"),
+        Route("GET", "/api/recheck/capacity", "read the recheck station backlog limit", "handle_recheck_capacity"),
+        Route("POST", "/api/recheck/capacity", "set the recheck station backlog limit", "handle_set_recheck_capacity"),
+        # -- reinjection --------------------------------------------------
+        Route("POST", "/api/reinject/policy", "describe the slot policy and its tradeoff", "handle_reinject_policy"),
+        Route("POST", "/api/reinject/plan/{bag}", "decide slots and attempts for a failed bag", "handle_reinject_plan"),
+        Route("POST", "/api/reinject/trigger/{bag}", "idempotently fire the next attempt", "handle_reinject_trigger"),
+        Route("POST", "/api/reinject/trigger-due", "fire every bag whose slot has arrived", "handle_reinject_trigger_due"),
+        Route("POST", "/api/reinject/fail/{bag}", "report another failed recheck", "handle_reinject_fail"),
+        Route("POST", "/api/reinject/handoff/{bag}", "send a stuck bag to manual handling", "handle_reinject_handoff"),
+        Route("GET", "/api/reinject/plans", "list every reinjection plan", "handle_reinject_plans"),
+        Route("GET", "/api/reinject/plan/{bag}", "read one reinjection plan", "handle_reinject_plan_get"),
+        Route("GET", "/api/reinject/due", "bags whose next slot has arrived", "handle_reinject_due"),
+        Route("GET", "/api/reinject/handoffs", "manual handling handoff ledger", "handle_reinject_handoffs"),
+        Route("GET", "/api/reinject/reconcile", "cross-check queue, sort records and quota", "handle_reinject_reconcile"),
+        Route("POST", "/api/reinject/quota", "set a per-flight reinjection allowance", "handle_set_reinject_quota"),
+        Route("GET", "/api/reinject/quota", "list reinjection allowances", "handle_reinject_quota_status"),
+        Route("GET", "/api/reinject/quota/{flight}", "read one reinjection allowance", "handle_reinject_quota_for"),
         # -- belt ---------------------------------------------------------
         Route("GET", "/api/belt", "carousel and batch", "handle_belt_state"),
         Route("POST", "/api/belt/set", "set carousel and batch", "handle_belt_set"),
@@ -155,6 +172,7 @@ def route_table() -> list[Route]:
         # -- export -------------------------------------------------------
         Route("GET", "/api/export/audit.csv", "audit trail as CSV", "handle_export_audit"),
         Route("GET", "/api/export/sort.csv", "sort records as CSV", "handle_export_sort"),
+        Route("GET", "/api/export/handoffs.csv", "manual handoffs as CSV", "handle_export_handoffs"),
         Route("GET", "/api/export/loads.csv", "load records as CSV", "handle_export_loads"),
     ]
 

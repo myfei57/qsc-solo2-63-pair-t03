@@ -45,6 +45,26 @@ def test_dispatch_refuses_a_duplicate(plant, flight):
         plant.sorter.dispatch(plant.bag(bag.id), _committed(bag))
 
 
+def test_reinjection_attempts_are_records_but_repeating_one_is_refused(plant, flight):
+    bag = check_in(plant, flight.id, 1)[0]
+    plant.chutes.assign(flight.id, "T1-CHA")
+    plant.sorter.dispatch(plant.bag(bag.id), _committed(bag))
+    first = plant.sorter.dispatch_attempt(plant.bag(bag.id), _committed(bag), 1)
+    second = plant.sorter.dispatch_attempt(plant.bag(bag.id), _committed(bag), 2)
+    assert (first.attempt, second.attempt) == (1, 2)
+    assert plant.sorter.log.reinjection_count(bag.id) == 2
+    with pytest.raises(ConflictError):
+        plant.sorter.dispatch_attempt(plant.bag(bag.id), _committed(bag), 1)
+    assert plant.sorter.log.reinjection_count(bag.id) == 2
+
+
+def test_reinjection_attempt_zero_is_rejected(plant, flight):
+    bag = check_in(plant, flight.id, 1)[0]
+    plant.chutes.assign(flight.id, "T1-CHA")
+    with pytest.raises(ConflictError):
+        plant.sorter.dispatch_attempt(plant.bag(bag.id), _committed(bag), 0)
+
+
 def test_route_follows_the_current_assignment(plant, flight):
     bag = check_in(plant, flight.id, 1)[0]
     plant.chutes.assign(flight.id, "T1-CHA")

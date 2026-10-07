@@ -555,6 +555,137 @@ def handle_recheck_clear(server, request: Request) -> Response:
     return json_response({"dropped": dropped})
 
 
+def handle_recheck_capacity(server, request: Request) -> Response:
+    plant = _plant(server)
+    capacity = plant.reinject.recheck_capacity()
+    return json_response(
+        {
+            "capacity": capacity,
+            "unlimited": capacity == 0,
+            "backlog": plant.recheck.length(),
+            "has_capacity": plant.reinject.has_capacity(),
+        }
+    )
+
+
+def handle_set_recheck_capacity(server, request: Request) -> Response:
+    capacity = _plant(server).set_recheck_capacity(request.int_field("capacity", 0))
+    return json_response({"capacity": capacity, "unlimited": capacity == 0})
+
+
+# ---------------------------------------------------------------------------
+# reinjection
+# ---------------------------------------------------------------------------
+
+
+def _policy_from_request(request: Request):
+    from bagsort.reinject.policy import Policy
+
+    return Policy(
+        max_attempts=request.int_field("max_attempts", Policy().max_attempts),
+        interval_seconds=request.int_field("interval_seconds", Policy().interval_seconds),
+        guard_seconds=request.int_field("guard_seconds", Policy().guard_seconds),
+    )
+
+
+def handle_reinject_policy(server, request: Request) -> Response:
+    from bagsort.reinject import policy
+
+    settings = _policy_from_request(request)
+    return json_response(
+        {
+            "selected": policy.POLICY,
+            "rejected_alternative": policy.REJECTED_ALTERNATIVE,
+            "tradeoff": policy.TRADEOFF,
+            "defaults": {
+                "max_attempts": settings.max_attempts,
+                "interval_seconds": settings.interval_seconds,
+                "guard_seconds": settings.guard_seconds,
+            },
+        }
+    )
+
+
+def handle_reinject_plan(server, request: Request) -> Response:
+    plant = _plant(server)
+    # Planning is the station's "recheck failed" verdict, so it enters through
+    # the backpressure-limited admit path rather than bypassing the station.
+    plan = plant.fail_recheck(request.param("bag"), _policy_from_request(request))
+    return json_response(plan.as_dict(), status=201)
+
+
+def handle_reinject_trigger(server, request: Request) -> Response:
+    result = _plant(server).trigger_reinjection(request.param("bag"))
+    return json_response(result.as_dict())
+
+
+def handle_reinject_trigger_due(server, request: Request) -> Response:
+    results = _plant(server).trigger_due_reinjections()
+    return json_response([result.as_dict() for result in results])
+
+
+def handle_reinject_fail(server, request: Request) -> Response:
+    reason = request.str_field("reason", "recheck failed again")
+    plan = _plant(server).report_recheck_failure(request.param("bag"), reason)
+    return json_response(plan.as_dict())
+
+
+def handle_reinject_handoff(server, request: Request) -> Response:
+    plant = _plant(server)
+    reason = request.required("reason")
+    stage = request.str_field("blocked_stage", "reinject")
+    handoff = plant.handoff_bag(request.param("bag"), reason, stage)
+    return json_response(handoff.as_dict(), status=201)
+
+
+def handle_reinject_plans(server, request: Request) -> Response:
+    return json_response([plan.as_dict() for plan in _plant(server).reinject.plans()])
+
+
+def handle_reinject_plan_get(server, request: Request) -> Response:
+    plan = _plant(server).reinject.plan_for(request.param("bag"))
+    if plan is None:
+        return json_response({"error": "not found"}, status=404)
+    return json_response(plan.as_dict())
+
+
+def handle_reinject_due(server, request: Request) -> Response:
+    return json_response({"due": _plant(server).reinject.due()})
+
+
+def handle_reinject_handoffs(server, request: Request) -> Response:
+    return json_response([handoff.as_dict() for handoff in _plant(server).reinject.handoffs()])
+
+
+def handle_reinject_reconcile(server, request: Request) -> Response:
+    report = _plant(server).reinjection_reconcile()
+    return json_response(report, status=200 if report["consistent"] else 409)
+
+
+def handle_set_reinject_quota(server, request: Request) -> Response:
+    limit = _plant(server).reinject_quota.set_limit(
+        request.required("flight_id"), request.int_field("limit", -1)
+    )
+    return json_response({"flight_id": request.str_field("flight_id"), "limit": limit})
+
+
+def handle_reinject_quota_status(server, request: Request) -> Response:
+    return json_response(_plant(server).reinject_quota.status())
+
+
+def handle_reinject_quota_for(server, request: Request) -> Response:
+    quota = _plant(server).reinject_quota
+    flight_id = request.param("flight")
+    return json_response(
+        {
+            "flight_id": flight_id,
+            "limit": quota.limit(flight_id),
+            "available": quota.available(flight_id),
+            "allowed": quota.allowed(flight_id),
+        }
+    )
+
+
 # ---------------------------------------------------------------------------
 # belt
 # ---------------------------------------------------------------------------
@@ -773,6 +904,13 @@ def handle_export_audit(server, request: Request) -> Response:
 def handle_export_sort(server, request: Request) -> Response:
     records = _plant(server).sorter.records()
     return csv_response(csv_export.render(csv_export.SORT_COLUMNS, csv_export.sort_rows(records)))
+
+
+def handle_export_handoffs(server, request: Request) -> Response:
+    handoffs = _plant(server).reinject.handoffs()
+    return csv_response(
+        csv_export.render(csv_export.HANDOFF_COLUMNS, csv_export.handoff_rows(handoffs))
+    )
 
 
 def handle_export_loads(server, request: Request) -> Response:
